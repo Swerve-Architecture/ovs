@@ -117,10 +117,11 @@ from scapy.layers.l2 import Ether
 
 import argparse
 import psutil
-import re
+import ctypes
 import struct
-import sys
 import time
+import sys
+import re
 
 #
 # Actual eBPF source code
@@ -192,12 +193,43 @@ int do_trace(struct pt_regs *ctx) {
 };
 """
 
+""" Reference Event
+struct event_t {
+    u32 cpu;
+    u32 pid;
+    u32 upcall_type;
+    u64 ts;
+    u32 pkt_size;
+    u64 key_size;
+    char comm[TASK_COMM_LEN];
+    char dpif_name[32];
+    unsigned char pkt[MAX_PACKET];
+    unsigned char key[MAX_KEY];
+};
+"""
+
+TASK_COMM_LEN = 16 # linux/sched.h
+class Event(ctypes.Structure):
+    _fields_ = [
+        ('cpu', ctypes.c_uint32),
+        ('pid', ctypes.c_uint32),
+        ('upcall_type', ctypes.c_uint32),
+        ('ts', ctypes.c_uint64),
+        ('pkt_size', ctypes.c_uint32),
+        ('key_size', ctypes.c_uint64),
+        ('comm', ctypes.c_char * TASK_COMM_LEN),
+        ('dpif_name', ctypes.c_char * 32),
+        ('pkt', ctypes.c_uint8 * 64),
+        ('key', ctypes.c_uint8 * 64),
+    ]
 
 #
 # print_event()
 #
 def print_event(ctx, data, size):
-    event = b['events'].event(data)
+    # event = b['events'].event(data)
+    event = ctypes.cast(data, ctypes.POINTER(Event)).contents
+    # print(event)
     print("{:<18.9f} {:<4} {:<16} {:<10} {:<32} {:<4} {:<10} {:<10}".
           format(event.ts / 1000000000,
                  event.cpu,
