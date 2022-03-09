@@ -49,6 +49,7 @@ except ModuleNotFoundError:
     print("WARNING: Can't find the BPF Compiler Collection (BCC) tools!")
     print("         This is NOT problem if you analyzing previously collected"
           " data.\n")
+from concurrent.futures import thread
 from alive_progress import alive_bar
 from collections import namedtuple
 from halo import Halo
@@ -58,14 +59,15 @@ from strenum import StrEnum
 from text_histogram3 import histogram
 from time import process_time
 
-import argparse
-import ast
-import psutil
-import re
-import struct
 import subprocess
-import sys
+import argparse
+import struct
+import psutil
+import ctypes
 import time
+import sys
+import ast
+import re
 
 #
 # Global definitions
@@ -268,7 +270,6 @@ int kprobe__ovs_packet_cmd_execute(struct pt_regs *ctx, struct sk_buff *skb)
     return 0;
 }
 """
-
 
 #
 # Event types
@@ -690,6 +691,42 @@ def event_to_dict(event):
     return event_dict
 
 
+""" Reference Event
+struct event_t {
+    u32 event;
+    u32 cpu;
+    u32 pid;
+    u32 upcall_type;
+    u64 ts;
+    u32 pkt_frag_size;
+    u32 pkt_size;
+    u64 key_size;
+    char comm[TASK_COMM_LEN];
+    char dpif_name[32];
+    char dev_name[16];
+    unsigned char pkt[MAX_PACKET];
+    unsigned char key[MAX_KEY];
+};
+"""
+
+TASK_COMM_LEN = 16 # linux/sched.h
+class _Event(ctypes.Structure):
+    _fields_ = [
+        ('event', ctypes.c_uint32),
+        ('cpu', ctypes.c_uint32),
+        ('pid', ctypes.c_uint32),
+        ('upcall_type', ctypes.c_uint32),
+        ('ts', ctypes.c_uint64),
+        ('pkt_frag_size', ctypes.c_uint32),
+        ('pkt_size', ctypes.c_uint32),
+        ('key_size', ctypes.c_uint64),
+        ('comm', ctypes.c_char * TASK_COMM_LEN),
+        ('dpif_name', ctypes.c_char * 32),
+        ('dev_name', ctypes.c_char * 16),
+        ('pkt', ctypes.c_uint8 * 64),
+        ('key', ctypes.c_uint8 * 64),
+    ]
+
 #
 # receive_event_bcc()
 #
@@ -697,7 +734,8 @@ def receive_event_bcc(ctx, data, size):
     global events_received
     events_received += 1
 
-    event = b['events'].event(data)
+    # event = b['events'].event(data)
+    event = ctypes.cast(data, ctypes.POINTER(_Event)).contents
 
     if export_file is not None:
         export_file.write("event = {}\n".format(event_to_dict(event)))
@@ -969,7 +1007,7 @@ def collect_event_sets(events, collect_stats=False, profile=False,
             #
             for idx_in_list, (idx_recv, recv) in enumerate(recv_upcall_list):
                 match = False
-
+                
                 if idx_recv < idx:
                     remove_indexes.append(idx_in_list)
                     continue
@@ -1704,6 +1742,8 @@ def main():
 
     collection, batch_stats, thread_stats = collect_event_sets(
         trace_data, collect_stats=True, spinner=True)
+
+    print(collection, batch_stats, thread_stats)
 
     if len(collection) <= 0:
         print("No upcall data sets where found!!")
